@@ -548,7 +548,7 @@ var JSHINT = (function () {
 
 		// a double definition of a let variable in same block throws a TypeError
 		if (funct["(blockscope)"] && funct["(blockscope)"].current.has(t)) {
-			error("E044", state.tokens.next, t);
+			//error("E044", state.tokens.next, t);
 		}
 
 		// if the identifier is from a let, adds it only to the current blockscope
