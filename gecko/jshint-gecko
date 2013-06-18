@@ -1,0 +1,309 @@
+#!/usr/bin/python
+
+"""
+Run JSHint with hack for importScripts().
+
+importScript() is used in some worker code. For example, In ril_worker.js, there
+is importScripts('ril_consts.js').
+
+JSHint could only lint on single file and could not seeing the globals defined
+in other file. Thus, if we run `jshint ril_worker.js` directly, we will get
+thousand of errors about symbol not defined. This script aims to provide a
+wrapper command adressing the issue.
+
+If the script do not contain 'importScripts', it just pass the argument to
+execute a normal JSHint command. Otherwise, it do the following hack:
+
+Ex: Script A
+--------------------------------
+importScripts('Script B')
+...
+--------------------------------
+
+We merge these two scripts into one by the following way.
+
+--------------------------------
+[Script B (ex: ril_consts.js)]
+(function(){ [Script A (ex: ril_worker.js)]
+})();
+--------------------------------
+
+Script A (ril_worker.js) runs global strict mode.
+Script B (ril_consts.js) not.
+
+The above merge way ensures the correct scope of 'strict mode.'
+"""
+
+
+__author__ = 'aknow'
+
+
+import argparse
+import bisect
+import os
+import os.path
+import re
+import subprocess
+import unicodedata
+
+
+class StringUtility:
+
+    """A collection of some string utilities."""
+
+    @staticmethod
+    def find_match_lines(lines, pattern):
+        """Return a list of lines that contains given pattern."""
+        return [line for line in lines if pattern in line]
+
+    @staticmethod
+    def remove_non_ascii(data):
+        """Remove non ascii characters in data and return it as new string."""
+        if type(data).__name__ == 'unicode':
+            data = unicodedata.normalize(
+                'NFKD', data).encode('ascii', 'ignore')
+        return data
+
+    @staticmethod
+    def auto_close(lines):
+        """Ensure every line ends with '\n'."""
+        if lines and not lines[-1].endswith('\n'):
+            lines[-1] += '\n'
+        return lines
+
+    @staticmethod
+    def auto_wrap_strict_mode(lines):
+        """Wrap by function scope if lines contain 'use strict'."""
+        if StringUtility.find_match_lines(lines, 'use strict'):
+            lines[0] = '(function(){' + lines[0]
+            lines.append('})();\n')
+        return lines
+
+    @staticmethod
+    def get_imported_list(lines):
+        """Get a list of imported items."""
+        return [item
+                for line in StringUtility.find_match_lines(lines, 'importScripts')
+                for item in StringUtility._get_imported_list_from_line(line)]
+
+    @staticmethod
+    def _get_imported_list_from_line(line):
+        """Extract all items from 'importScripts(...)'.
+
+        importScripts("ril_consts.js", "systemlibs.js")
+        => ['ril_consts', 'systemlibs.js']
+
+        """
+        pattern = re.compile(r'\s*importScripts\((.*)\)')
+        m = pattern.match(line)
+        if not m:
+            raise Exception('Parse importScripts error.')
+        return [name.translate(None, '\' "') for name in m.group(1).split(',')]
+
+
+class LocalFileReader:
+
+    """Handle the process of reading the source code from local system."""
+
+    def __init__(self):
+        pass
+
+    def find_file(self, folder, name):
+        """Find file 'name' in directory tree 'folder'."""
+        for root, dirs, files in os.walk(folder):
+            if name in files:
+                return os.path.join(root, name)
+        return None
+
+    def locate_file(self, filename):
+        """Locate the file in system."""
+        if os.path.isfile(filename):
+            return filename
+        else:
+            max_depth = 7  # Longest depth on current structure is 7.
+            basename = os.path.basename(filename)
+            dirname = os.path.dirname(filename)
+            while max_depth:
+                path = self.find_file(dirname, basename)
+                if path:
+                    return path
+                else:
+                    dirname = os.path.join(dirname, os.pardir)
+                    max_depth -= 1
+            raise Exception('Cannot locate the file: ' + filename)
+
+    def read_file(self, filename):
+        """Read the file and return its content."""
+        filepath = self.locate_file(filename)
+        return open(filepath).read()
+
+
+class JSHintCommand:
+
+    """Invoke jshint from command line."""
+
+    def __init__(self, cmd):
+        self.cmd = cmd
+
+    def run(self, code, filename=''):
+        """Excute JShint check for the given code."""
+        if filename:
+            result = self._run_file(filename)
+        else:
+            tmp = self._get_tmp_filename()
+            open(tmp, 'w').write(code)
+            result = self._run_file(tmp)
+            os.remove(tmp)
+
+        check_pass = (len(result) == 0)
+        return check_pass, result.splitlines()
+
+    def _run_file(self, filename):
+        """Excute JSHint on a give file."""
+        try:
+            result = subprocess.check_output('%s %s' % (self.cmd, filename),
+                                         shell=True, stderr=subprocess.STDOUT)
+            return result
+        except subprocess.CalledProcessError as e:
+            return e.output
+
+    def _get_uuid(self):
+        """Return a string of uuid."""
+        uuid = subprocess.check_output('uuidgen', shell=True)
+        return uuid.strip()
+
+    def _get_tmp_filename(self):
+        """Get a tmp filename which is not existed in system."""
+        tmp = None
+        while (not tmp or os.path.exists(tmp)):
+            tmp = "_jshint_%s.js" % self._get_uuid()
+        return tmp
+
+
+class Linter:
+
+    """Handle the linting related process."""
+
+    def __init__(self, code_reader, jshint, reporter=None):
+        """Set the linter with code_reader, jshint engine, and reporter.
+
+        Should have following functionality.
+        - code_reader.read_file(filename)
+        - jshint.run(code, filename)
+        - reporter([...])
+
+        """
+        self.code_reader = code_reader
+        self.jshint = jshint
+        if reporter is None:
+            self.reporter = lambda x: '\n'.join(x)
+        else:
+            self.reporter = reporter
+
+    def lint_file(self, filename):
+        """Lint the file and return (pass, error_message)."""
+        # Get code contents.
+        code = self.code_reader.read_file(filename)
+        lines = code.splitlines()
+        import_list = StringUtility.get_imported_list(lines)
+        if not import_list:
+            check_pass, error_message = self.jshint.run(code, filename)
+        else:
+            newlines, info = self._merge_multiple_codes(filename, import_list)
+            # Each line of |newlines| contains '\n'.
+            check_pass, error_message = self.jshint.run(''.join(newlines))
+            error_message = self._convert_merged_result(error_message, info)
+            # Only keep errors for this file.
+            error_message = [line for line in error_message
+                             if line.startswith(filename)]
+            check_pass = (len(error_message) == 0)
+        return check_pass, self.reporter(error_message)
+
+    def _merge_multiple_codes(self, filename, import_list):
+        """Merge multiple codes from filename and import_list."""
+        dirname, filename = os.path.split(filename)
+        dst_line = 1
+        dst_results = []
+        info = []
+
+        # Put the imported script first, and then the original script.
+        for f in import_list + [filename]:
+            filepath = os.path.join(dirname, f)
+
+            # Maintain a mapping table.
+            # New line number after merge => original file and line number.
+            info.append((dst_line, filepath, 1))
+            try:
+                code = self.code_reader.read_file(filepath)
+                lines = code.splitlines(True)  # Keep '\n'.
+                src_results = StringUtility.auto_wrap_strict_mode(
+                    StringUtility.auto_close(lines))
+                dst_results.extend(src_results)
+                dst_line += len(src_results)
+            except:
+                info.pop()
+        return dst_results, info
+
+    def _convert_merged_result(self, error_lines, line_info):
+        pattern = re.compile(r'(.*): line (\d+),(.*)')
+        start_line = [info[0] for info in line_info]
+        new_result_lines = []
+        for line in error_lines:
+            m = pattern.match(line)
+            if not m:
+                continue
+
+            line_number, remain = int(m.group(2)), m.group(3)
+
+            #  [1, 2, 7, 8]
+            #            ^ for 7, pos = 3
+            #         ^    for 6, pos = 2
+            pos = bisect.bisect_right(start_line, line_number)
+            dst_line, name, src_line = line_info[pos - 1]
+            real_line_number = line_number - dst_line + src_line
+            new_result_lines.append(
+                "%s: line %s,%s" % (name, real_line_number, remain))
+        return new_result_lines
+
+
+def output(lines):
+    pattern = re.compile(r'(.*): line (\d+),(.*)')
+    lines = filter(pattern.match, lines)  # Each line should be an error.
+    if len(lines):
+        print '%s\n\n%s errors' % ('\n'.join(lines), len(lines))
+
+def parse_option():
+    """Extract --config and --verbose."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', metavar='STRING',
+                        help='Custom configuration file')
+    parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('files', metavar='ARGS', nargs='+')
+    args = parser.parse_args()
+    return args
+
+def get_lint_command(options):
+    verbose = '--verbose' if options.verbose else ''
+    config = '--config %s' % options.config if options.config else ''
+    return 'jshint %s %s' % (verbose, config)
+
+
+if __name__ == '__main__':
+
+    args = parse_option()
+
+    # Check files.
+    for f in args.files:
+        if not os.path.exists(f):
+            print 'File not found: %s' % f
+            exit(1)
+
+    linter = Linter(
+            LocalFileReader(),
+            JSHintCommand(get_lint_command(args)))
+
+    result_lines = []
+    for f in args.files:
+        check_pass, result = linter.lint_file(f)
+        result_lines.extend(result.splitlines())
+    output(result_lines)
