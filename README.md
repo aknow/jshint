@@ -1,40 +1,69 @@
-JSHint, A Static Code Analysis Tool for JavaScript
---------------------------------------------------
+JSHint (JSHint-Gecko)
+==================================================
 
-\[ [Use it online](http://jshint.com/) •  [About](http://jshint.com/about/) • 
-[Docs](http://jshint.com/docs/) • [FAQ](http://jshint.com/docs/faq) • 
-[Install](http://jshint.com/install/) • [Hack](http://jshint.com/hack/) • 
-[Blog](http://jshint.com/blog/) • [Twitter](https://twitter.com/jshint/) \]
+Customize JSHint for special usage on mozilla/gecko RIL related code.
 
-[![Build Status](https://travis-ci.org/jshint/jshint.png?branch=master)](https://travis-ci.org/jshint/jshint)
-[![NPM version](https://badge.fury.io/js/jshint.png)](http://badge.fury.io/js/jshint)
+**Code**
 
-JSHint is a community-driven tool to detect errors and potential problems
-in JavaScript code and to enforce your team’s coding conventions. It is
-very flexible so you can easily adjust it to your particular coding guidelines
-and the environment you expect your code to execute in.
+* RILContentHelper.js
+* RadioInterfaceLayer.js
+* ril_worker.js
+* ril_consts.js
 
-#### Reporting a bug
+**Modification**
 
-To report a bug simply create a
-[new GitHub Issue](https://github.com/jshint/jshint/issues/new) and describe
-your problem or suggestion. We welcome all kind of feedback regarding
-JSHint including but not limited to:
+* Modify controlling directive for fallthrough in switch case to `// Fall through`
+* Ignore errors for redefined `let` variable, ex: `let foo = function foo() {}`
+* Provide sample `.jshintrc`
+* Provide wrapper command `jshint-gecko` that could handle `importScripts()` used in worker code
 
- * When JSHint doesn't work as expected
- * When JSHint complains about valid JavaScript code that works in all browsers
- * When you simply want a new option or feature
+**Presentation**
 
-Before reporting a bug look around to see if there are any open or closed tickets
-that cover your issue. And remember the wisdom: pull request > bug report > tweet.
+[Improve Code Quality of RIL Code by JSHint](https://speakerdeck.com/aknow/improve-code-quality-of-ril-code-by-jshint)
 
 
-#### License
+Install & Update
+----------------
 
-JSHint is distributed under the MIT License. One file and one file only
-(src/stable/jshint.js) is distributed under the slightly modified MIT License.
+Run the following command. (Note: You don't have to clone the repository.)
+
+    curl https://raw.github.com/aknow/jshint-gecko/master/install.sh | bash
+
+**Behind the script**
+
+* Install `nodejs` (if not existed) by `nvm`  to `~/.nvm`
+    -  Add following lines to `~/.bashrc`. It enable the node and add the support for
+`sudo node`
+
+            . ~/.nvm/nvm.sh
+            nvm use ${NODE_VERSION}
+            alias sudo='sudo '
+
+* Uninstall existed jshint
+* Inatall jshint globally from this repository
+* Create default `.jshintrc` in `~/.jshintrc`
+* Create wrapper command in `/usr/bin/jshint-gecko` (invoke sudo in this step)
 
 
-#### Thank you!
+Usage
+-----
 
-We really appreciate all kind of feedback and contributions. Thanks for using and supporting JSHint!
+    jshint-gecko <js-file>
+
+
+As a Plugins for Vim
+--------------------
+
+* Use [syntastic](https://github.com/scrooloose/syntastic) and modify
+`$VIM/bundle/syntastic/syntax_checkers/javascript/jshint.vim`
+
+![modify for syntastic](https://raw.github.com/aknow/jshint-gecko/master/gecko/syntastic_modify.png)
+
+* Add following lines in your .vimrc
+
+        let g:syntastic_always_populate_loc_list = 1
+        let g:syntastic_javascript_checkers = ['jshint']
+
+syntastic trigger the syntax check when saving the file and populate the results
+to location-list-window. You could type `:lwindow` in Vim to open the window.
+
